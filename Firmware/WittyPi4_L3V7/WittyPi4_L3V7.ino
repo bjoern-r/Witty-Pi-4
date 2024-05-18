@@ -57,8 +57,8 @@
 #define I2C_ALARM2_TRIGGERED        10  // 1 if alarm2 (shutdown) has been triggered
 #define I2C_ACTION_REASON           11  // the latest action reason: 1-alarm1; 2-alarm2; 3-click; 4-low voltage; 5-voltage restored; 6-over temperature; 7-below temperature; 8-alarm1 delayed; 9-USB 5V connected; 10-power connected; 11-reboot
 #define I2C_FW_REVISION             12  // the firmware revision
-#define I2C_RFU_1                   13  // reserve for future usage
-#define I2C_RFU_2                   14  // reserve for future usage
+#define I2C_NUM_RESETS              13  // Number of recorded resets
+#define I2C_NIXDA                   14  // flags & trigger & watchdog | write bit: 0:SYS_UP 1:RESET 2:PWR_BTN 3:wdt_on 4:wdt_off 5: 6: 7:  | read bit: 0:SYSisUP 1:WDTon? 2: 3:
 #define I2C_RFU_3                   15  // reserve for future usage
 
 /*
@@ -167,11 +167,13 @@ volatile boolean wakeupByWatchdog = false;
 
 volatile boolean ledIsOn = false;
 
-volatile unsigned long buttonStateChangeTime = 0;
+//volatile unsigned long buttonStateChangeTime = 0;
 
-volatile unsigned long voltageQueryTime = 0;
+//volatile unsigned long voltageQueryTime = 0;
 
-volatile unsigned long getVinTime = 0;
+volatile unsigned int runSeconds = 0;
+
+volatile unsigned int getVinTime = 0;
 
 volatile unsigned int powerCutDelay = 0;
 
@@ -192,6 +194,8 @@ volatile byte lastButton = 1;
 volatile byte lastSystemUp = 0;
 
 volatile boolean turnOffFromTXD = false;
+
+volatile unsigned long secsSinceLastI2CComms = 0;
 
 SoftWireMaster softWireMaster;  // software I2C master
 
@@ -263,7 +267,7 @@ void initializeRegisters() {
   // firmware id: 0x37 (Witty Pi 4 L3V7)
   i2cReg[I2C_ID] = 0x37;  
   
-  i2cReg[I2C_FW_REVISION] = 0x06;
+  i2cReg[I2C_FW_REVISION] = 0x16; //0x06;
   
   i2cReg[I2C_CONF_ADDRESS] = 0x08;
 
@@ -282,7 +286,7 @@ void initializeRegisters() {
   i2cReg[I2C_CONF_OVER_TEMP_POINT] = 0x50;
 
   // synchronize configuration with EEPROM
-  for (byte i = 0; i < I2C_REG_COUNT; i ++) {
+  for (byte i = I2C_CONF_ADDRESS; i < I2C_REG_COUNT; i ++) {
     byte val = EEPROM.read(i);
     if (val == 255) {
       EEPROM.update(i, i2cReg[i]);
@@ -292,8 +296,8 @@ void initializeRegisters() {
   }
 
   // copy some EEPROM backed data to PCF85063 and LM75B
-  writeToDevice(ADDRESS_LM75B, I2C_LM75B_TOS - I2C_LM75B_TEMPERATURE, &i2cReg[I2C_CONF_OVER_TEMP_POINT], 1);
-  writeToDevice(ADDRESS_LM75B, I2C_LM75B_THYST - I2C_LM75B_TEMPERATURE, &i2cReg[I2C_CONF_BELOW_TEMP_POINT], 1);
+  //bri writeToDevice(ADDRESS_LM75B, I2C_LM75B_TOS - I2C_LM75B_TEMPERATURE, &i2cReg[I2C_CONF_OVER_TEMP_POINT], 1);
+  //bri writeToDevice(ADDRESS_LM75B, I2C_LM75B_THYST - I2C_LM75B_TEMPERATURE, &i2cReg[I2C_CONF_BELOW_TEMP_POINT], 1);
   writeToDevice(ADDRESS_RTC, I2C_RTC_OFFSET - I2C_RTC_CTRL1, &i2cReg[I2C_CONF_RTC_OFFSET], 1);
 }
 
@@ -486,8 +490,8 @@ byte detectLowVoltage() {
 // get input voltage, will return previous value if it was measured within one second
 // will update the register when new measurement is done
 float getInputVoltage() {
-  unsigned long curTime = micros();
-  if (getVinTime > curTime || curTime - getVinTime >= 1000000) {
+  unsigned int curTime = runSeconds ;//micros();
+  if (getVinTime > curTime || curTime - getVinTime >= 1) {
     getVinTime = curTime;
     float v = getInputVoltageWithoutUpdateReg();
     updateRegister(I2C_VOLTAGE_IN_I, getIntegerPart(v));
@@ -609,7 +613,26 @@ void receiveEvent(int count) {
           writeToDevice(ADDRESS_RTC, I2C_RTC_OFFSET - I2C_RTC_CTRL1, &i2cReg[I2C_CONF_RTC_OFFSET], 1);
         }
       }
+    } else if (i2cIndex == I2C_NIXDA){
+      if (TinyWireS.available()){
+        uint8_t val = TinyWireS.read();
+        //write bit: 0:SYS_UP 1:RESET 2:PWR_BTN 3:wdt_on 4:wdt_off 5: 6: 7:
+        // read bit: 0:SYSisUP 1:WDTon? 2: 3:
+        if (val & _BV(0)){
+          sysUpPinEvent(1);
+        }
+        if (val & _BV(2)){
+          pwrButtonEvent();
+        }
+        if (val & _BV(4)){
+          i2cReg[I2C_NIXDA] &= ~_BV(1);
+        }else{
+          i2cReg[I2C_NIXDA] |= _BV(1);
+        }
+      }
     }
+
+    secsSinceLastI2CComms = 0;
   }
 }
 
@@ -652,14 +675,18 @@ void requestEvent() {
     softWireMaster.requestFrom(ADDRESS_RTC, 1);
     TinyWireS.write(softWireMaster.read());
     softWireMaster.endTransmission();
+  } else if (i2cIndex == I2C_NIXDA){
+    TinyWireS.write(systemIsUp | (i2cReg[I2C_NIXDA] & _BV(1)) );
   } else {
     TinyWireS.write(i2cReg[i2cIndex]);  // direct i2c register
   }
 }
 
 
-// watchdog interrupt routine
+// watchdog interrupt routine (every second)
 ISR (WDT_vect) {
+  runSeconds++; //second counter
+
   // turn off white LED after delay
   ledUpTime++;
   if (ledUpTime == 3) {
@@ -676,7 +703,7 @@ ISR (WDT_vect) {
   detectLowVoltage();
 
   // handle temperature related actions
-  handleTemperatureActtonsIfNeeded();
+  //bri handleTemperatureActtonsIfNeeded();
 
   // process RTC alarms
   processAlarmIfNeeded();
@@ -693,6 +720,9 @@ ISR (WDT_vect) {
       emulateButtonClick();
     }
   }
+
+  secsSinceLastI2CComms++;
+  assessResetWatchdogCounters();
 }
 
 
@@ -716,17 +746,17 @@ ISR (PCINT0_vect) {
 }
 
 
-// pin state change interrupt routine for PCINT1_vect (PCINT8~15)
-ISR (PCINT1_vect) {
-  byte button = digitalRead(PIN_BUTTON);
-  byte systemUp = digitalRead(PIN_SYS_UP);
-  
-  if (button != lastButton) {
-    if (button == 0) {   // button is pressed, PCINT9
-      // restore from emulated button clicking
-      digitalWrite(PIN_BUTTON, 1);
-      pinMode(PIN_BUTTON, INPUT_PULLUP);
+void sysUpPinEvent(byte systemUp){
+    if (!ledIsOn && powerIsOn && !turningOff && !systemIsUp && systemUp == 1)  {  // system is up, PCINT8
+      // clear the low-voltage shutdown flag when sys_up signal arrives
+      updateRegister(I2C_LV_SHUTDOWN, 0);
+    
+      // mark system is up
+      systemIsUp = true;
+    }
+}
 
+void pwrButtonEvent(){
       // turn on the white LED
       ledOn();
       
@@ -748,18 +778,27 @@ ISR (PCINT1_vect) {
       TCNT1 = getPowerCutPreloadTimer(true);
 
       isButtonClickEmulated = false;
+}
+
+// pin state change interrupt routine for PCINT1_vect (PCINT8~15)
+ISR (PCINT1_vect) {
+  byte button = digitalRead(PIN_BUTTON);
+  byte systemUp = digitalRead(PIN_SYS_UP);
+  
+  if (button != lastButton) {
+    if (button == 0) {   // button is pressed, PCINT9
+      // restore from emulated button clicking
+      digitalWrite(PIN_BUTTON, 1);
+      pinMode(PIN_BUTTON, INPUT_PULLUP);
+      
+      pwrButtonEvent();
+
     } else {  // button is released
       buttonPressed = false;
     }
   }
   if (systemUp != lastSystemUp) {
-    if (!ledIsOn && powerIsOn && !turningOff && !systemIsUp && systemUp == 1)  {  // system is up, PCINT8
-      // clear the low-voltage shutdown flag when sys_up signal arrives
-      updateRegister(I2C_LV_SHUTDOWN, 0);
-    
-      // mark system is up
-      systemIsUp = true;
-    }
+    sysUpPinEvent(systemUp);
   }
   lastButton = button;
   lastSystemUp = systemUp;    
@@ -792,7 +831,7 @@ ISR (TIM1_OVF_vect) {
 // update I2C register and save to EEPROM
 void updateRegister(byte index, byte value) {
   i2cReg[index] = value;
-  if (index < I2C_REG_COUNT) {
+  if ((index < I2C_REG_COUNT)&&(index >= I2C_CONF_ADDRESS)) { //TODO: avoid writes for status regs ... 
     EEPROM.update(index, value);
   }
 }
@@ -915,6 +954,7 @@ void copyAlarm(byte offset) {
 }
 
 
+#if 0
 // handle temperature related actions (if configured)
 void handleTemperatureActtonsIfNeeded() {
   // this counter makes sure not turning off your Pi too quickly
@@ -942,6 +982,7 @@ void handleTemperatureActtonsIfNeeded() {
     }
   }
 }
+#endif
 
 
 // turn off Raspberry Pi only if it is on
@@ -1048,4 +1089,37 @@ byte value2Offset(char value) {
   } else {
     return (0x80 + value);
   }
+}
+
+void assessResetWatchdogCounters() {
+  // If is on, but no comms from Pi for 2 minutes, reboot
+  //unsigned long shutdownAfterSecs = (i2cReg[I2C_SHUTDOWN_AFTER_INACTIVE] * 60);
+  //if (shutdownAfterSecs > 0 && powerIsOn && secsSinceLastPowerChange > shutdownAfterSecs && secsSinceLastI2CComms > shutdownAfterSecs) {
+  //  reset();
+  //}
+  if (i2cReg[I2C_NIXDA] & _BV(1) && (5*60)<secsSinceLastI2CComms ){
+    resetPi();
+  }
+}
+
+void resetPi() {
+
+  cli(); // disable interrupts
+
+  cutPower();
+  systemIsUp = false;
+
+  // Flash quickly to show reset occuring
+  int counter = 0;
+  while (counter < 10){
+    ledOn();
+    delay(100);
+    ledOff();
+    delay(100);
+    counter++;
+  }
+
+  sei(); // Re-enable all interrupts
+  emulateButtonClick();
+
 }
