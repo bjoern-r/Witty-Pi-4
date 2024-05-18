@@ -15,11 +15,13 @@
 #include <avr/sleep.h>
 #include <EEPROM.h>
 
-#define PIN_SYS_UP                0   // pin to listen to SYS_UP
+//#define USE_GPIO                  1   // undefine to not use any GPIO communication with Pi
+
+#define PIN_SYS_UP                0   // pin to listen to SYS_UP (PCINT8)
 #define PIN_LED                   0   // pin to drive white LED
-#define PIN_BUTTON                1   // pin to button
+#define PIN_BUTTON                1   // pin to button (PCINT9)
 #define PIN_CTRL                  3   // pin to control output
-#define PIN_TX_UP                 5   // pin to listen to Raspberry Pi's TXD
+#define PIN_TX_UP                 5   // pin to listen to Raspberry Pi's TXD (PCINT5)
 #define PIN_VIN                   A1  // pin to ADC1
 #define PIN_VOUT                  A2  // pin to ADC2
 #define PIN_VK                    A3  // pin to ADC3
@@ -203,10 +205,12 @@ void setup() {
   softWireMaster.begin();
 
   // initialize pin states and make sure power is cut
-  pinMode(PIN_SYS_UP, INPUT);
+  #ifdef USE_GPIO
+    pinMode(PIN_SYS_UP, INPUT);
+    pinMode(PIN_TX_UP, INPUT);
+  #endif
   pinMode(PIN_BUTTON, INPUT_PULLUP);
   pinMode(PIN_CTRL, OUTPUT);
-  pinMode(PIN_TX_UP, INPUT);
   pinMode(PIN_VIN, INPUT);
   pinMode(PIN_VOUT, INPUT);
   pinMode(PIN_VK, INPUT);
@@ -230,9 +234,15 @@ void setup() {
   cli();
 
   // enable pin change interrupts
-  GIMSK = _BV (PCIE0) | _BV (PCIE1);
-  PCMSK1 = _BV (PCINT8) | _BV (PCINT9);
-  PCMSK0 = _BV (PCINT5);
+  #ifdef USE_GPIO
+    GIMSK = _BV (PCIE0) | _BV (PCIE1);
+    PCMSK1 = _BV (PCINT8) | _BV (PCINT9);
+    PCMSK0 = _BV (PCINT5);
+  #else
+    GIMSK =  _BV (PCIE1);
+    PCMSK1 = _BV (PCINT9);
+  #endif
+
 
   // enable Timer1
   timer1_enable();
@@ -265,7 +275,7 @@ void initializeRegisters() {
   // firmware id: 0x37 (Witty Pi 4 L3V7)
   i2cReg[I2C_ID] = 0x37;  
   
-  i2cReg[I2C_FW_REVISION] = 0x06;
+  i2cReg[I2C_FW_REVISION] = 0x17;
   
   i2cReg[I2C_CONF_ADDRESS] = 0x08;
 
@@ -389,8 +399,15 @@ void sleep() {
   ADCSRA |= _BV(ADEN);                    // ADC on
   timer1_enable();                        // enable Timer1
 
-  GIMSK = _BV (PCIE0) | _BV (PCIE1);
-  PCMSK1 = _BV (PCINT8) | _BV (PCINT9); 
+  #ifdef USE_GPIO
+    GIMSK = _BV (PCIE0) | _BV (PCIE1);
+    PCMSK1 = _BV (PCINT8) | _BV (PCINT9); 
+  #else
+    // note no change needed
+    //GIMSK = _BV (PCIE1);                    // only enable interrupt for switch (PCINT9)
+    //PCMSK1 = _BV (PCINT9);
+  #endif
+
   sei();                                  // enable all required interrupts
 
   // tap the button to wake up
@@ -703,28 +720,32 @@ ISR (WDT_vect) {
 
 // pin state change interrupt routine for PCINT0_vect (PCINT0~7) 
 ISR (PCINT0_vect) {
-  if (digitalRead(PIN_TX_UP) == 1) {
-    if (!listenToTxd) {
-      // start listen to TXD pin;
-      listenToTxd = true;
+  #ifdef USE_GPIO
+    if (digitalRead(PIN_TX_UP) == 1) {
+      if (!listenToTxd) {
+        // start listen to TXD pin;
+        listenToTxd = true;
+      }
+    } else {
+      if (listenToTxd && systemIsUp) {
+      listenToTxd = false;
+      systemIsUp = false;
+      turningOff = true;
+      turnOffFromTXD = true;
+      ledOff(); // turn off the white LED
+      TCNT1 = getPowerCutPreloadTimer(true);
+      }
     }
-  } else {
-    if (listenToTxd && systemIsUp) {
-     listenToTxd = false;
-     systemIsUp = false;
-     turningOff = true;
-     turnOffFromTXD = true;
-     ledOff(); // turn off the white LED
-     TCNT1 = getPowerCutPreloadTimer(true);
-    }
-  }
+  #endif
 }
 
 
 // pin state change interrupt routine for PCINT1_vect (PCINT8~15)
 ISR (PCINT1_vect) {
   byte button = digitalRead(PIN_BUTTON);
-  byte systemUp = digitalRead(PIN_SYS_UP);
+  #ifdef USE_GPIO
+    byte systemUp = digitalRead(PIN_SYS_UP);
+  #endif
   
   if (button != lastButton) {
     if (button == 0) {   // button is pressed, PCINT9
@@ -757,17 +778,19 @@ ISR (PCINT1_vect) {
       buttonPressed = false;
     }
   }
-  if (systemUp != lastSystemUp) {
-    if (!ledIsOn && powerIsOn && !turningOff && !systemIsUp && systemUp == 1)  {  // system is up, PCINT8
-      // clear the low-voltage shutdown flag when sys_up signal arrives
-      updateRegister(I2C_LV_SHUTDOWN, 0);
-    
-      // mark system is up
-      systemIsUp = true;
+  #ifdef USE_GPIO
+    if (systemUp != lastSystemUp) {
+      if (!ledIsOn && powerIsOn && !turningOff && !systemIsUp && systemUp == 1)  {  // system is up, PCINT8
+        // clear the low-voltage shutdown flag when sys_up signal arrives
+        updateRegister(I2C_LV_SHUTDOWN, 0);
+      
+        // mark system is up
+        systemIsUp = true;
+      }
     }
-  }
+    lastSystemUp = systemUp;
+  #endif
   lastButton = button;
-  lastSystemUp = systemUp;    
 }
 
 
@@ -778,14 +801,19 @@ ISR (TIM1_OVF_vect) {
     TCNT1 = getPowerCutPreloadTimer(true);
     forcePowerCutIfNeeded();
     if (turningOff) {
-      if (turnOffFromTXD && digitalRead(PIN_TX_UP) == 1) {  // if it is rebooting
-        turningOff = false;
-        updateRegister(I2C_ACTION_REASON, REASON_REBOOT);
-        ledOn();
-      } else {  // cut the power and enter sleep
+      #ifdef USE_GPIO
+        if (turnOffFromTXD && digitalRead(PIN_TX_UP) == 1) {  // if it is rebooting
+          turningOff = false;
+          updateRegister(I2C_ACTION_REASON, REASON_REBOOT);
+          ledOn();
+        } else {  // cut the power and enter sleep
+          cutPower();
+          sleep();
+        }
+      #else
         cutPower();
         sleep();
-      }
+      #endif
     }
   } else {
     TCNT1 = getPowerCutPreloadTimer(false);
