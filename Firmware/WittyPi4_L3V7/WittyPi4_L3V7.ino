@@ -284,7 +284,7 @@ void initializeRegisters() {
   i2cReg[I2C_CONF_OVER_TEMP_POINT] = 0x50;
 
   // synchronize configuration with EEPROM
-  for (byte i = 0; i < I2C_REG_COUNT; i ++) {
+  for (byte i = I2C_CONF_ADDRESS; i < I2C_REG_COUNT; i ++) {
     byte val = EEPROM.read(i);
     if (val == 255) {
       EEPROM.update(i, i2cReg[i]);
@@ -797,7 +797,7 @@ ISR (TIM1_OVF_vect) {
 // update I2C register and save to EEPROM
 void updateRegister(byte index, byte value) {
   i2cReg[index] = value;
-  if (index < I2C_REG_COUNT) {
+  if ((index < I2C_REG_COUNT) && (index >= I2C_CONF_ADDRESS)) {
     EEPROM.update(index, value);
   }
 }
