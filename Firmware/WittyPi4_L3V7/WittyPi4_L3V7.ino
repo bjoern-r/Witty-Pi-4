@@ -167,11 +167,13 @@ volatile boolean wakeupByWatchdog = false;
 
 volatile boolean ledIsOn = false;
 
-volatile unsigned long buttonStateChangeTime = 0;
+//volatile unsigned long buttonStateChangeTime = 0;
 
-volatile unsigned long voltageQueryTime = 0;
+//volatile unsigned long voltageQueryTime = 0;
 
-volatile unsigned long getVinTime = 0;
+volatile unsigned int getVinTime = 0;
+
+volatile unsigned int secondsTimer = 0; //global seconds counter (incremented on WDT reset)
 
 volatile unsigned int powerCutDelay = 0;
 
@@ -486,8 +488,8 @@ byte detectLowVoltage() {
 // get input voltage, will return previous value if it was measured within one second
 // will update the register when new measurement is done
 float getInputVoltage() {
-  unsigned long curTime = micros();
-  if (getVinTime > curTime || curTime - getVinTime >= 1000000) {
+  unsigned int curTime = secondsTimer; //micros();
+  if (getVinTime != curTime) {
     getVinTime = curTime;
     float v = getInputVoltageWithoutUpdateReg();
     updateRegister(I2C_VOLTAGE_IN_I, getIntegerPart(v));
@@ -666,6 +668,9 @@ ISR (WDT_vect) {
     ledUpTime = 0;
     ledOff();
   }
+
+  //second counter
+  secondsTimer++;
 
   // update power mode
   if (powerIsOn) {
