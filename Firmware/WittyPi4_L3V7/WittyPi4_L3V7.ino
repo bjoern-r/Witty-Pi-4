@@ -16,6 +16,7 @@
 #include <EEPROM.h>
 
 //#define USE_GPIO                  1   // undefine to not use any GPIO communication with Pi
+#define USE_I2C_SYSUP             1   // use gpio register to handle SYS_UP and TX_UP
 
 #define PIN_SYS_UP                0   // pin to listen to SYS_UP (PCINT8)
 #define PIN_LED                   0   // pin to drive white LED
@@ -60,7 +61,7 @@
 #define I2C_ACTION_REASON           11  // the latest action reason: 1-alarm1; 2-alarm2; 3-click; 4-low voltage; 5-voltage restored; 6-over temperature; 7-below temperature; 8-alarm1 delayed; 9-USB 5V connected; 10-power connected; 11-reboot
 #define I2C_FW_REVISION             12  // the firmware revision
 #define I2C_RFU_1                   13  // reserve for future usage
-#define I2C_RFU_2                   14  // reserve for future usage
+#define I2C_NIXDA                   14  // flags & trigger & watchdog | write bit: 0:SYS_UP 1:RESET 2:PWR_BTN 3:wdt_on 4:wdt_off 5: 6: 7:  | read bit: 0:SYSisUP 1:WDTon?
 #define I2C_RFU_3                   15  // reserve for future usage
 
 /*
@@ -104,7 +105,7 @@
 #define I2C_CONF_OVER_TEMP_POINT    46  // set point for over temperature
 
 #define I2C_CONF_DEFAULT_ON_DELAY   47  // the delay (in second) between MCU initialization and turning on Raspberry Pi, when I2C_CONF_DEFAULT_ON = 1
-#define I2C_CONF_MISC               48  // 8 bits for miscellaneous configuration. bit-0: set to 1 to disable alarm1 (startup) delay
+#define I2C_CONF_MISC               48  // 8 bits for miscellaneous configuration. bit-0: set to 1 to disable alarm1 (startup) delay; bit-1: enable WDT on startup (NIXDA)
 #define I2C_CONF_RFU_3              49  // reserve for future usage
 
 #define I2C_REG_COUNT               50  // number of (non-virtual) I2C registers
@@ -197,6 +198,10 @@ volatile byte lastSystemUp = 0;
 
 volatile boolean turnOffFromTXD = false;
 
+volatile boolean rebooting = false;
+
+volatile unsigned long secsSinceLastI2CComms = 0;
+
 SoftWireMaster softWireMaster;  // software I2C master
 
 
@@ -275,7 +280,7 @@ void initializeRegisters() {
   // firmware id: 0x37 (Witty Pi 4 L3V7)
   i2cReg[I2C_ID] = 0x37;  
   
-  i2cReg[I2C_FW_REVISION] = 0x17;
+  i2cReg[I2C_FW_REVISION] = 0x18; //0x07
   
   i2cReg[I2C_CONF_ADDRESS] = 0x08;
 
@@ -292,6 +297,13 @@ void initializeRegisters() {
 
   i2cReg[I2C_CONF_BELOW_TEMP_POINT] = 0x4b;
   i2cReg[I2C_CONF_OVER_TEMP_POINT] = 0x50;
+
+//  if ( (i2cReg[I2C_CONF_MISC] & _BV(1)) == 0 ) {
+//    i2cReg[I2C_NIXDA] = 0 & ~_BV(1); //trun wdt off
+//  }else{
+//    i2cReg[I2C_NIXDA] = 0 | _BV(1); //trun wdt on
+//  }
+i2cReg[I2C_NIXDA] = _BV(7) & ~_BV(1); //trun wdt off
 
   // synchronize configuration with EEPROM
   for (byte i = I2C_CONF_ADDRESS; i < I2C_REG_COUNT; i ++) {
@@ -628,7 +640,54 @@ void receiveEvent(int count) {
           writeToDevice(ADDRESS_RTC, I2C_RTC_OFFSET - I2C_RTC_CTRL1, &i2cReg[I2C_CONF_RTC_OFFSET], 1);
         }
       }
+  #ifdef USE_I2C_SYSUP
+    } else if (i2cIndex == I2C_NIXDA) {
+      if (TinyWireS.available()){
+        uint8_t val = TinyWireS.read();
+        uint8_t tmp;
+        //write bit: 0:SYS_UP(1) 1:RESET(2) 2:PWR_BTN(4) 3:wdt_on(8) 4:wdt_off(16) 5: 6: 7:
+        // read bit: 0:SYSisUP 1:WDTon 2: 3:
+        if (val & _BV(0)){
+          //sysUpPinEvent(1);
+          if (powerIsOn && rebooting){
+            turningOff = false;
+            systemIsUp = true;
+            rebooting = false;
+            updateRegister(I2C_ACTION_REASON, REASON_REBOOT);
+            ledOn();
+          }
+          if (!ledIsOn && powerIsOn && !turningOff && !systemIsUp)  {  // system is up, PCINT8
+            // clear the low-voltage shutdown flag when sys_up signal arrives
+            updateRegister(I2C_LV_SHUTDOWN, 0);
+            // mark system is up
+            systemIsUp = true;
+          }// TODO: recover from (turningOff=1) like the listenForTX ISR below...
+        }
+        if (val & _BV(1)){
+          //RESET ? trigger reset after some delay?
+          systemIsUp = false;
+          rebooting = true;
+          ledOff(); // turn off the white LED
+          TCNT1 = getPowerCutPreloadTimer(true);
+        }
+        if (val & _BV(2)){
+          //pwrButtonEvent();
+          emulateButtonClick();
+        }
+        if (val & _BV(3)){
+          //i2cReg[I2C_NIXDA] |= _BV(1); //turn WDT on
+          tmp = i2cReg[I2C_NIXDA] |= _BV(1);
+          updateRegister(i2cIndex, tmp);
+        }
+        if (val & _BV(4)){ //todo maybe use updateReg
+          //i2cReg[I2C_NIXDA] &= ~_BV(1); //trun wdt off
+          tmp = i2cReg[I2C_NIXDA] & ~_BV(1);
+          updateRegister(i2cIndex, tmp);
+        }
+      }
+  #endif
     }
+    secsSinceLastI2CComms = 0;
   }
 }
 
@@ -650,6 +709,23 @@ void requestEvent() {
       break;
     case I2C_POWER_MODE:
       updatePowerMode();
+      break;
+#if 0 //use RFU3 for debugging
+    case I2C_RFU_3:
+      //updateRegister(i2cIndex, (byte) (secondsTimer & 0x00FF)); //store low nibble of seconds clock in RFU3
+      byte temp = /*_BV(7)|*/ _BV(6) |\
+                  (powerIsOn ?       _BV(5):0)|\
+                  (wakeupByWatchdog ?_BV(4):0)|\
+                  (turnOffFromTXD ?  _BV(3):0)|\
+                  (turningOff ?      _BV(2):0)|\
+                  (systemIsUp ?      _BV(1):0)|\
+                  (listenToTxd ?     _BV(0):0);
+      updateRegister(i2cIndex, temp);
+      break;
+#endif
+    case I2C_NIXDA:
+      volatile byte val = i2cReg[I2C_NIXDA] | (systemIsUp ?      _BV(0):0) | (turningOff ? _BV(6):0) ;
+      updateRegister(i2cIndex, val);
       break;
   }
 
@@ -715,6 +791,10 @@ ISR (WDT_vect) {
       emulateButtonClick();
     }
   }
+
+  // handle watchdog
+  secsSinceLastI2CComms++;
+  assessResetWatchdogCounters();
 }
 
 
@@ -814,6 +894,8 @@ ISR (TIM1_OVF_vect) {
         cutPower();
         sleep();
       #endif
+    }else if (rebooting) {
+      resetPi();
     }
   } else {
     TCNT1 = getPowerCutPreloadTimer(false);
@@ -1081,4 +1163,37 @@ byte value2Offset(char value) {
   } else {
     return (0x80 + value);
   }
+}
+
+void assessResetWatchdogCounters() {
+  // If is on, but no comms from Pi for 2 minutes, reboot
+  //unsigned long shutdownAfterSecs = (i2cReg[I2C_SHUTDOWN_AFTER_INACTIVE] * 60);
+  //if (shutdownAfterSecs > 0 && powerIsOn && secsSinceLastPowerChange > shutdownAfterSecs && secsSinceLastI2CComms > shutdownAfterSecs) {
+  //  reset();
+  //}
+  if ( (i2cReg[I2C_NIXDA] & _BV(1)) && (5*60)<secsSinceLastI2CComms ){
+    resetPi();
+  }
+}
+
+void resetPi() {
+
+  cli(); // disable interrupts
+
+  cutPower();
+  systemIsUp = false;
+
+  // Flash quickly to show reset occuring
+  int counter = 0;
+  while (counter < 10){
+    ledOn();
+    delay(100);
+    ledOff();
+    delay(100);
+    counter++;
+  }
+
+  sei(); // Re-enable all interrupts
+  emulateButtonClick();
+
 }
