@@ -724,7 +724,7 @@ void requestEvent() {
       break;
 #endif
     case I2C_NIXDA:
-      volatile byte val = i2cReg[I2C_NIXDA] | (systemIsUp ?      _BV(0):0) | (turningOff ? _BV(6):0) ;
+      volatile byte val = i2cReg[I2C_NIXDA] & _BV(1) | (systemIsUp ?      _BV(0):0) | (turningOff ? _BV(6):0) ;
       updateRegister(i2cIndex, val);
       break;
   }
