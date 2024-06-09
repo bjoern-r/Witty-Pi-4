@@ -61,7 +61,7 @@
 #define I2C_ACTION_REASON           11  // the latest action reason: 1-alarm1; 2-alarm2; 3-click; 4-low voltage; 5-voltage restored; 6-over temperature; 7-below temperature; 8-alarm1 delayed; 9-USB 5V connected; 10-power connected; 11-reboot
 #define I2C_FW_REVISION             12  // the firmware revision
 #define I2C_RFU_1                   13  // reserve for future usage
-#define I2C_NIXDA                   14  // flags & trigger & watchdog | write bit: 0:SYS_UP 1:RESET 2:PWR_BTN 3:wdt_on 4:wdt_off 5: 6: 7:  | read bit: 0:SYSisUP 1:WDTon?
+#define I2C_NIXDA                   14  // flags & trigger & watchdog | write bit: 0:SYS_UP(1) 1:RESET(2) 2:PWR_BTN(4) 3:wdt_on(8) 4:wdt_off(16) 5: 6: 7:  | read bit: 0:SYSisUP 1:WDTon 2: 3: 4: 5: 6:turningOff
 #define I2C_RFU_3                   15  // reserve for future usage
 
 /*
@@ -151,6 +151,7 @@
 #define REASON_USB_5V_CONNECTED   9
 #define REASON_POWER_CONNECTED    10
 #define REASON_REBOOT             11
+#define REASON_WDT                12
 
 volatile byte i2cReg[I2C_REG_COUNT];
 
@@ -280,7 +281,7 @@ void initializeRegisters() {
   // firmware id: 0x37 (Witty Pi 4 L3V7)
   i2cReg[I2C_ID] = 0x37;  
   
-  i2cReg[I2C_FW_REVISION] = 0x18; //0x07
+  i2cReg[I2C_FW_REVISION] = 0x19; //0x07
   
   i2cReg[I2C_CONF_ADDRESS] = 0x08;
 
@@ -646,7 +647,7 @@ void receiveEvent(int count) {
         uint8_t val = TinyWireS.read();
         uint8_t tmp;
         //write bit: 0:SYS_UP(1) 1:RESET(2) 2:PWR_BTN(4) 3:wdt_on(8) 4:wdt_off(16) 5: 6: 7:
-        // read bit: 0:SYSisUP 1:WDTon 2: 3:
+        // read bit: 0:SYSisUP 1:WDTon 2: 3: 6:turningOff
         if (val & _BV(0)){
           //sysUpPinEvent(1);
           if (powerIsOn && rebooting){
@@ -750,6 +751,8 @@ void requestEvent() {
   } else {
     TinyWireS.write(i2cReg[i2cIndex]);  // direct i2c register
   }
+
+  secsSinceLastI2CComms = 0;
 }
 
 
@@ -1166,12 +1169,13 @@ byte value2Offset(char value) {
 }
 
 void assessResetWatchdogCounters() {
-  // If is on, but no comms from Pi for 2 minutes, reboot
+  // If is on, but no comms from Pi for 5 minutes, reboot
   //unsigned long shutdownAfterSecs = (i2cReg[I2C_SHUTDOWN_AFTER_INACTIVE] * 60);
   //if (shutdownAfterSecs > 0 && powerIsOn && secsSinceLastPowerChange > shutdownAfterSecs && secsSinceLastI2CComms > shutdownAfterSecs) {
   //  reset();
   //}
-  if ( (i2cReg[I2C_NIXDA] & _BV(1)) && (5*60)<secsSinceLastI2CComms ){
+  if ( (i2cReg[I2C_NIXDA] & _BV(1)) && systemIsUp && powerIsOn && !rebooting && (5*60)<secsSinceLastI2CComms ){
+    updateRegister(I2C_ACTION_REASON, REASON_WDT);
     resetPi();
   }
 }
