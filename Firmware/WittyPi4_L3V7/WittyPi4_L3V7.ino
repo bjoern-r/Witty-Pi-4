@@ -58,7 +58,7 @@
 #define I2C_ACTION_REASON           11  // the latest action reason: 1-alarm1; 2-alarm2; 3-click; 4-low voltage; 5-voltage restored; 6-over temperature; 7-below temperature; 8-alarm1 delayed; 9-USB 5V connected; 10-power connected; 11-reboot
 #define I2C_FW_REVISION             12  // the firmware revision
 #define I2C_NUM_RESETS              13  // Number of recorded resets
-#define I2C_NIXDA                   14  // flags & trigger & watchdog | write bit: 0:SYS_UP 1:RESET 2:PWR_BTN 3:wdt_on 4:wdt_off 5: 6: 7:  | read bit: 0:SYSisUP 1:WDTon? 2: 3:
+#define I2C_NIXDA                   14  // flags & trigger & watchdog | write bit: 0:SYS_UP 1:RESET 2:PWR_BTN 3:wdt_on 4:wdt_off 5: 6: 7:  | read bit: 0:SYSisUP 1:WDTon? 2:turningOff? 3:
 #define I2C_RFU_3                   15  // reserve for future usage
 
 /*
@@ -676,7 +676,7 @@ void requestEvent() {
     TinyWireS.write(softWireMaster.read());
     softWireMaster.endTransmission();
   } else if (i2cIndex == I2C_NIXDA){
-    TinyWireS.write(systemIsUp | (i2cReg[I2C_NIXDA] & _BV(1)) );
+    TinyWireS.write(systemIsUp | (i2cReg[I2C_NIXDA] & _BV(1)) | (turningOff ? _BV(2):0));
   } else {
     TinyWireS.write(i2cReg[i2cIndex]);  // direct i2c register
   }
