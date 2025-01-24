@@ -267,7 +267,7 @@ void initializeRegisters() {
   // firmware id: 0x37 (Witty Pi 4 L3V7)
   i2cReg[I2C_ID] = 0x37;  
   
-  i2cReg[I2C_FW_REVISION] = 0x16; //0x06;
+  i2cReg[I2C_FW_REVISION] = 0x87; //0x06;
   
   i2cReg[I2C_CONF_ADDRESS] = 0x08;
 
@@ -616,18 +616,18 @@ void receiveEvent(int count) {
     } else if (i2cIndex == I2C_NIXDA){
       if (TinyWireS.available()){
         uint8_t val = TinyWireS.read();
-        //write bit: 0:SYS_UP 1:RESET 2:PWR_BTN 3:wdt_on 4:wdt_off 5: 6: 7:
-        // read bit: 0:SYSisUP 1:WDTon? 2: 3:
-        if (val & _BV(0)){
+        //write bit: 0:SYS_UP 1:RESET? 2:PWR_BTN 3:wdt_on 4:wdt_off 5: 6: 7:
+        if (val & _BV(0)){ // 0:SYS_UP
           sysUpPinEvent(1);
         }
-        if (val & _BV(2)){
+        if (val & _BV(2)){ // 2:PWR_BTN
           pwrButtonEvent();
         }
-        if (val & _BV(4)){
-          i2cReg[I2C_NIXDA] &= ~_BV(1);
-        }else{
+        if (val & _BV(3)){ // 3:wdt_on
           i2cReg[I2C_NIXDA] |= _BV(1);
+        }
+        if (val & _BV(4)){ // 4:wdt_off
+          i2cReg[I2C_NIXDA] &= ~_BV(1);
         }
       }
     }
@@ -676,6 +676,7 @@ void requestEvent() {
     TinyWireS.write(softWireMaster.read());
     softWireMaster.endTransmission();
   } else if (i2cIndex == I2C_NIXDA){
+    // read bit: 0:SYSisUP 1:WDTon? 2:turningOff? 3:
     TinyWireS.write(systemIsUp | (i2cReg[I2C_NIXDA] & _BV(1)) | (turningOff ? _BV(2):0));
   } else {
     TinyWireS.write(i2cReg[i2cIndex]);  // direct i2c register
