@@ -677,7 +677,7 @@ void requestEvent() {
     softWireMaster.endTransmission();
   } else if (i2cIndex == I2C_NIXDA){
     // read bit: 0:SYSisUP 1:WDTon? 2:turningOff? 3:
-    TinyWireS.write(systemIsUp | (i2cReg[I2C_NIXDA] & _BV(1)) | (turningOff ? _BV(2):0));
+    TinyWireS.write((systemIsUp ? 1:0) | (i2cReg[I2C_NIXDA] & _BV(1)) | (turningOff ? _BV(2):0));
   } else {
     TinyWireS.write(i2cReg[i2cIndex]);  // direct i2c register
   }
