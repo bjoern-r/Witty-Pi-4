@@ -629,6 +629,9 @@ void receiveEvent(int count) {
         if (val & _BV(4)){ // 4:wdt_off
           i2cReg[I2C_NIXDA] &= ~_BV(1);
         }
+        if (val & _BV(5)){ // 5:test_xor
+          i2cReg[I2C_NIXDA] ^= _BV(4); //toggle bit 4a
+        }
       }
     }
 
@@ -677,7 +680,7 @@ void requestEvent() {
     softWireMaster.endTransmission();
   } else if (i2cIndex == I2C_NIXDA){
     // read bit: 0:SYSisUP 1:WDTon? 2:turningOff? 3:
-    TinyWireS.write((systemIsUp ? 1:0) | (i2cReg[I2C_NIXDA] & _BV(1)) | (turningOff ? _BV(2):0));
+    TinyWireS.write((systemIsUp ? 1:0) | ( i2cReg[I2C_NIXDA] & (_BV(1)|_BV(4)) ) | (turningOff ? _BV(2):0) );
   } else {
     TinyWireS.write(i2cReg[i2cIndex]);  // direct i2c register
   }
@@ -832,7 +835,7 @@ ISR (TIM1_OVF_vect) {
 // update I2C register and save to EEPROM
 void updateRegister(byte index, byte value) {
   i2cReg[index] = value;
-  if ((index < I2C_REG_COUNT)&&(index >= I2C_CONF_ADDRESS)) { //TODO: avoid writes for status regs ... 
+  if ((index < I2C_REG_COUNT)&&(index >= I2C_CONF_ADDRESS)) { //TODO: avoid writes for status regs ...
     EEPROM.update(index, value);
   }
 }
@@ -846,7 +849,7 @@ void emulateButtonClick() {
 }
 
 
-// temporarily turn on ADC to get input voltage 
+// temporarily turn on ADC to get input voltage
 float turnOnAdcAndGetInputVoltage() {
   byte bk = ADCSRA;
   ADCSRA |= _BV(ADEN);
