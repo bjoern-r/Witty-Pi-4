@@ -1,0 +1,11 @@
+[Unit]
+Description=WittyPi i2c watchdog
+Before=basic.target
+After=local-fs.target sysinit.target
+DefaultDependencies=no
+
+[Service]
+ExecStart=/usr/local/bin/i2c-watchdog
+
+[Install]
+WantedBy=basic.target
