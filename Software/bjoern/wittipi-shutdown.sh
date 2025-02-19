@@ -9,6 +9,7 @@ case $1 in
 	poweroff|halt )
 		echo "preparing wittypi for poweroff"
 		logger "preparing wittypi for poweroff"
+		## press virtual power button > 2:PWR_BTN 1<<2 = 4
 		/usr/sbin/i2cset -y 0 8 14 4
 		;;
 	reboot )

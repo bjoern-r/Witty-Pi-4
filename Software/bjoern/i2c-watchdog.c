@@ -69,6 +69,7 @@ int main(int argc, char **argv)
 	unsigned int check_intervall_ms = 500;
 	int fd, rc, opt;
 
+	setlinebuf(stdout);
 
 	opterr = 0;
 	while ((opt = getopt (argc, argv, "i:a:c:b:")) != -1){
