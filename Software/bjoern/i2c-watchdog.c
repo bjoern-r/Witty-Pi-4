@@ -61,9 +61,27 @@ static inline __s32 i2c_smbus_write_byte_data(int file, __u8 command, __u8 value
 }
 
 
+#define I2C_ID                      0   // firmware id: 0x37 (Witty Pi 4 L3V7)
+#define I2C_VOLTAGE_IN_I            1   // integer part for input voltage
+#define I2C_VOLTAGE_IN_D            2   // decimal part (x100) for input voltage
+#define I2C_VOLTAGE_OUT_I           3   // integer part for output voltage
+#define I2C_VOLTAGE_OUT_D           4   // decimal part (x100) for output voltage
+#define I2C_CURRENT_OUT_I           5   // integer part for output current
+#define I2C_CURRENT_OUT_D           6   // decimal part (x100) for output current
+#define I2C_POWER_MODE              7   // 0 if Witty Pi is powered with USB-C 5V, 2 if Witty Pi is powered with 3.7V battery
+#define I2C_LV_SHUTDOWN             8   // 1 if system was shutdown by low voltage, otherwise 0
+#define I2C_ALARM1_TRIGGERED        9   // 1 if alarm1 (startup) has been triggered
+#define I2C_ALARM2_TRIGGERED        10  // 1 if alarm2 (shutdown) has been triggered
+#define I2C_ACTION_REASON           11  // the latest action reason: 1-alarm1; 2-alarm2; 3-click; 4-low voltage; 5-voltage restored; 6-over temperature; 7-below temperature; 8-alarm1 delayed; 9-USB 5V connected; 10-power connected; 11-reboot
+#define I2C_FW_REVISION             12  // the firmware revision
+#define I2C_NUM_RESETS              13  // Number of recorded resets
+#define I2C_NIXDA                   14  // flags & trigger & watchdog | write bit: 0:SYS_UP 1:RESET 2:PWR_BTN 3:wdt_on 4:wdt_off 5: 6: 7:  | read bit: 0:SYSisUP 1:WDTon? 2:turningOff? 3:
+#define I2C_RFU_3                   15  // reserve for future usage
+
+
 int main(int argc, char **argv)
 {
-	uint8_t data, addr = 0x08, fw_id, fw_version;
+	uint8_t data, addr = 0x08, fw_id, fw_version, lv_shutdown;
 	char *path = "/dev/i2c-0";
 	char *shutdown_command = "/usr/sbin/poweroff";
 	unsigned int check_intervall_ms = 500;
@@ -105,10 +123,10 @@ int main(int argc, char **argv)
 	if (rc < 0)
 		err(errno, "Tried to set device address '0x%02x'", addr);
 
-	if (-1 == (data = i2c_smbus_read_byte_data(fd, 0))) // 0 firmware id: 0x37 (Witty Pi 4 L3V7)
+	if (-1 == (data = i2c_smbus_read_byte_data(fd, I2C_ID))) // 0 firmware id: 0x37 (Witty Pi 4 L3V7)
 		err(errno, "Read error '%s' addr '0x%02x'\n", path, addr);
 	fw_id = data;
-	if (-1 == (data = i2c_smbus_read_byte_data(fd, 12))) // 12  // the firmware revision
+	if (-1 == (data = i2c_smbus_read_byte_data(fd, I2C_FW_REVISION))) // 12  // the firmware revision
 		err(errno, "Read error '%s' addr '0x%02x'\n", path, addr);
 	fw_version = data;
 
@@ -116,14 +134,17 @@ int main(int argc, char **argv)
 		printf("WittyPi with watchdog rev 0x%02x found\n", fw_version);
 
 		printf("sending SysUp...\n");
-		if (i2c_smbus_write_byte_data(fd, 14, 1)<0)
-			err(errno, "Write error '%s' addr '0x%02x' reg %d\n", path, addr, 14);
+		if (i2c_smbus_write_byte_data(fd, I2C_NIXDA, 1)<0)
+			err(errno, "Write error '%s' addr '0x%02x' reg %d\n", path, addr, I2C_NIXDA);
 
 		//TODO switch on watchdog
+		//TODO kick watchdog with dummy write...
 		//TODO catch ctrl+c disable watchdog on exit
 		while(1){
-			if (-1 == (data = i2c_smbus_read_byte_data(fd, 14))) // 14  // flags & trigger & watchdog | read bit: 0:SYSisUP 1:WDTon? 2:turningOff? 3: 4: test-toggle
-				err(errno, "Read error '%s' addr '0x%02x'\n", path, addr);
+			if (-1 == (data = i2c_smbus_read_byte_data(fd, I2C_NIXDA))) // 14  // flags & trigger & watchdog | read bit: 0:SYSisUP 1:WDTon? 2:turningOff? 3: 4: test-toggle
+				err(errno, "Read error '%s' addr '0x%02x' reg '0x%02x'\n", path, addr, I2C_NIXDA);
+			if (-1 == (lv_shutdown = i2c_smbus_read_byte_data(fd, I2C_LV_SHUTDOWN)))
+				err(errno, "Read error '%s' addr '0x%02x' reg '0x%02x'\n", path, addr, I2C_LV_SHUTDOWN);
 
 			if (data & (1<<4)){ //test mode
 				printf("data 0x%02x -> bit 4 set !!\n", data);
@@ -135,6 +156,12 @@ int main(int argc, char **argv)
 
 			if (data & 1<<2) { // check for TurningOff
 				printf("turningOff bit set in WittyPi reg 14! Shutting down System...\n");
+				printf("exec '%s'\n", shutdown_command);
+				system(shutdown_command);
+				break;
+			}
+			if (lv_shutdown == 1){
+				printf("lv_shutdown detected by WittyPi! Shutting down System...\n");
 				printf("exec '%s'\n", shutdown_command);
 				system(shutdown_command);
 				break;
